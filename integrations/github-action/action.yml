@@ -1,0 +1,47 @@
+name: 'PentestAI Security Scan'
+description: 'Run automated security scanning with PentestAI'
+branding:
+  icon: 'shield'
+  color: 'green'
+inputs:
+  api-key:
+    description: 'PentestAI API key'
+    required: true
+  target-url:
+    description: 'Target URL to scan'
+    required: true
+  scan-type:
+    description: 'Scan type: nuclei, zap, promptfoo, full, ai'
+    required: false
+    default: 'ai'
+  fail-on:
+    description: 'Fail on severity level: critical, high, medium, low, none'
+    required: false
+    default: 'high'
+  wait-for-completion:
+    description: 'Wait for scan to complete before finishing'
+    required: false
+    default: 'true'
+outputs:
+  scan-id:
+    description: 'The ID of the created scan'
+  findings-count:
+    description: 'Total number of findings'
+  critical-count:
+    description: 'Number of critical findings'
+  score:
+    description: 'Security score (0-100)'
+runs:
+  using: 'composite'
+  steps:
+    - run: pip install pentestai-sdk
+      shell: bash
+    - run: python ${{ github.action_path }}/main.py
+      shell: bash
+      env:
+        PENTESTAI_API_KEY: ${{ inputs.api-key }}
+        PENTESTAI_TARGET_URL: ${{ inputs.target-url }}
+        PENTESTAI_SCAN_TYPE: ${{ inputs.scan-type }}
+        PENTESTAI_FAIL_ON: ${{ inputs.fail-on }}
+        PENTESTAI_WAIT: ${{ inputs.wait-for-completion }}
+        GITHUB_TOKEN: ${{ github.token }}

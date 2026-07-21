@@ -1,0 +1,32 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pentest-ai-edge-scanner
+  labels:
+    app: scanner-node
+    tier: edge
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: scanner-node
+  template:
+    metadata:
+      labels:
+        app: scanner-node
+    spec:
+      containers:
+      - name: agent-container
+        image: pentestai/worker-agent:latest
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        env:
+          - name: REGION
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.labels['topology.kubernetes.io/region']
+          - name: KAFKA_BOOTSTRAP_SERVERS
+            value: "kafka-cluster:9092"

@@ -1,0 +1,245 @@
+# =============================================================================
+# PentestAI — Continuous Deployment Pipeline
+# =============================================================================
+# Triggers on push to main after CI passes.
+# Builds → pushes to GHCR → deploys to staging → smoke tests → production.
+# =============================================================================
+
+name: CD
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  BUILD_TAG: ${{ github.sha }}
+  DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+  DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+  DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+jobs:
+  # ─── Build & Push ──────────────────────────────────────────────────────
+  build:
+    name: Build & Push Images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=,suffix=,format=long
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build & push app image
+        uses: docker/build-push-action@v5
+        with:
+          context: faz1
+          file: faz1/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Build & push worker image
+        uses: docker/build-push-action@v5
+        with:
+          context: faz1
+          file: faz1/Dockerfile.worker
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-worker:latest,${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-worker:${{ env.BUILD_TAG }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Image digest summary
+        run: |
+          echo "## Docker Images Built & Pushed" >> $GITHUB_STEP_SUMMARY
+          echo "- App: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ env.BUILD_TAG }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Worker: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-worker:${{ env.BUILD_TAG }}" >> $GITHUB_STEP_SUMMARY
+
+  # ─── Deploy to Staging ─────────────────────────────────────────────────
+  deploy-staging:
+    name: Deploy to Staging
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://staging.pentestai.com
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p ${{ env.DEPLOY_PORT }} ${{ env.DEPLOY_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Copy compose files to server
+        run: |
+          rsync -avz -e "ssh -p ${{ env.DEPLOY_PORT }} -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+            faz1/docker-compose.prod.yml \
+            faz1/.env \
+            faz1/nginx.conf \
+            ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }}:/opt/pentestai/
+
+      - name: Deploy to staging
+        run: |
+          ssh -p ${{ env.DEPLOY_PORT }} -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ env.DEPLOY_USER }}@${{ env.DEPLOY_HOST }} << 'EOF'
+            set -e
+            cd /opt/pentestai
+            export BUILD_TAG=${{ env.BUILD_TAG }}
+            export REGISTRY=${{ env.REGISTRY }}
+            docker login $REGISTRY -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d --no-deps --build app celery-worker celery-beat nginx
+            docker image prune -f
+          EOF
+
+      - name: Smoke test
+        run: |
+          sleep 15
+          MAX_RETRIES=12
+          for i in $(seq 1 $MAX_RETRIES); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://staging.pentestai.com/health 2>/dev/null || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Staging health check passed"
+              exit 0
+            fi
+            echo "Attempt $i/$MAX_RETRIES: HTTP $STATUS — retrying in 10s..."
+            sleep 10
+          done
+          echo "Staging health check failed after $MAX_RETRIES attempts"
+          exit 1
+
+  # ─── Deploy to Production ──────────────────────────────────────────────
+  deploy-production:
+    name: Deploy to Production
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://pentestai.com
+    concurrency: production-deploy
+
+    steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PROD_SSH_KEY }}" > ~/.ssh/prod_deploy_key
+          chmod 600 ~/.ssh/prod_deploy_key
+          ssh-keyscan -p ${{ secrets.PROD_SSH_PORT || '22' }} ${{ secrets.PROD_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Rolling update to production
+        run: |
+          ssh -p ${{ secrets.PROD_SSH_PORT || '22' }} -i ~/.ssh/prod_deploy_key -o StrictHostKeyChecking=no \
+            ${{ secrets.PROD_USER }}@${{ secrets.PROD_HOST }} << 'EOF'
+            set -e
+            cd /opt/pentestai
+            export BUILD_TAG=${{ env.BUILD_TAG }}
+            export REGISTRY=${{ env.REGISTRY }}
+            docker login $REGISTRY -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+
+            # Pull new images
+            docker compose -f docker-compose.prod.yml pull
+
+            # Rolling update: update one service at a time
+            for service in app celery-worker celery-beat nginx; do
+              echo "Updating $service..."
+              docker compose -f docker-compose.prod.yml up -d --no-deps --build $service
+              sleep 10
+            done
+
+            # Health check
+            for i in $(seq 1 15); do
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://pentestai.com/health 2>/dev/null || echo "000")
+              if [ "$STATUS" = "200" ]; then
+                echo "Production health check passed"
+                break
+              fi
+              echo "Attempt $i/15: HTTP $STATUS"
+              sleep 10
+            done
+
+            # Clean up old images
+            docker image prune -f
+          EOF
+
+      - name: Production smoke test
+        run: |
+          sleep 5
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://pentestai.com/health)
+          if [ "$STATUS" != "200" ]; then
+            echo "Production health check failed: HTTP $STATUS"
+            exit 1
+          fi
+          echo "Production health check passed: HTTP $STATUS"
+
+  # ─── Notification ──────────────────────────────────────────────────────
+  notify:
+    name: Send Notification
+    needs: [build, deploy-staging, deploy-production]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Determine status
+        id: status
+        run: |
+          if [[ "${{ needs.build.result }}" == "success" && "${{ needs.deploy-staging.result }}" == "success" && "${{ needs.deploy-production.result }}" == "success" ]]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "color=good" >> $GITHUB_OUTPUT
+            echo "emoji=:rocket:" >> $GITHUB_OUTPUT
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "color=danger" >> $GITHUB_OUTPUT
+            echo "emoji=:x:" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notify Slack
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ steps.status.outputs.status }}
+          fields: repo,message,commit,author,action,eventName,workflow
+          text: "CD Pipeline ${{ steps.status.outputs.emoji }} ${{ steps.status.outputs.status }} — ${{ github.repository }}@${{ github.sha }}"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        if: always() && env.SLACK_WEBHOOK_URL != ''

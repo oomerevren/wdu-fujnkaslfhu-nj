@@ -1,0 +1,237 @@
+# =============================================================================
+# PentestAI — Monitoring Stack (Prometheus + Grafana + OpenTelemetry + Loki + Tempo)
+# =============================================================================
+# Usage:
+#   docker compose -f docker-compose.monitoring.yml up -d
+#   docker compose -f docker-compose.monitoring.yml logs -f
+# =============================================================================
+
+x-logging: &default-logging
+  driver: "json-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-restart-policy: &restart-policy
+  restart: unless-stopped
+
+networks:
+  monitoring-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/16
+  pentestai-net:
+    external: true
+
+volumes:
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  loki_data:
+    driver: local
+  tempo_data:
+    driver: local
+
+services:
+  # ─── Prometheus ────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    <<: *restart-policy
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--web.console.libraries=/etc/prometheus/console_libraries"
+      - "--web.console.templates=/etc/prometheus/consoles"
+      - "--web.enable-lifecycle"
+      - "--web.enable-admin-api"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+      - ./prometheus/rules:/etc/prometheus/rules:ro 2>/dev/null || true
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *default-logging
+    networks:
+      - monitoring-net
+      - pentestai-net
+
+  # ─── Grafana ───────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.1.0
+    <<: *restart-policy
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-pentestai}
+      GF_INSTALL_PLUGINS: grafana-piechart-panel
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_SERVER_ROOT_URL: https://monitoring.pentestai.com
+      GF_UNIFIED_ALERTING_ENABLED: "true"
+      GF_FEATURE_TOGGLES_ENABLE: "tempoLiveTraces"
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro 2>/dev/null || true
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro 2>/dev/null || true
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging: *default-logging
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - monitoring-net
+
+  # ─── OpenTelemetry Collector ───────────────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.105.0
+    <<: *restart-policy
+    command:
+      - "--config=/etc/otelcol-contrib/config.yaml"
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "8888:8888"   # Prometheus metrics (internal)
+      - "8889:8889"   # Prometheus exporter
+    volumes:
+      - ./otel-collector.yml:/etc/otelcol-contrib/config.yaml:ro 2>/dev/null || true
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:4317"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *default-logging
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks:
+      - monitoring-net
+      - pentestai-net
+
+  # ─── Loki (Log Aggregation) ───────────────────────────────────────────
+  loki:
+    image: grafana/loki:3.0.0
+    <<: *restart-policy
+    command:
+      - "-config.file=/etc/loki/loki.yaml"
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki_data:/loki
+      - ./loki.yml:/etc/loki/loki.yaml:ro 2>/dev/null || true
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:3100/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *default-logging
+    networks:
+      - monitoring-net
+
+  # ─── Tempo (Distributed Tracing) ──────────────────────────────────────
+  tempo:
+    image: grafana/tempo:2.5.0
+    <<: *restart-policy
+    command:
+      - "-config.file=/etc/tempo.yaml"
+    ports:
+      - "3200:3200"   # Tempo UI & API
+      - "4317:4317"   # OTLP gRPC (if otel-collector not used)
+      - "14250:14250" # Jaeger gRPC
+    volumes:
+      - tempo_data:/tmp/tempo
+      - ./tempo.yml:/etc/tempo.yaml:ro 2>/dev/null || true
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:3200/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *default-logging
+    networks:
+      - monitoring-net
+
+  # ─── Promtail (Log Shipper, optional) ─────────────────────────────────
+  promtail:
+    image: grafana/promtail:3.0.0
+    <<: *restart-policy
+    command:
+      - "-config.file=/etc/promtail/promtail.yaml"
+    volumes:
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./promtail.yml:/etc/promtail/promtail.yaml:ro 2>/dev/null || true
+    logging: *default-logging
+    depends_on:
+      loki:
+        condition: service_healthy
+    networks:
+      - monitoring-net
+
+  # ─── cAdvisor (Container Metrics) ──────────────────────────────────────
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    <<: *restart-policy
+    privileged: true
+    devices:
+      - /dev/kmsg:/dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *default-logging
+    networks:
+      - monitoring-net
+      - pentestai-net
+
+  # ─── Node Exporter (Host Metrics) ─────────────────────────────────────
+  node-exporter:
+    image: prom/node-exporter:latest
+    <<: *restart-policy
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+      - "--collector.netclass.ignored-devices=^(veth|docker|br-|lo)$"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    ports:
+      - "9100:9100"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:9100/metrics"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    logging: *default-logging
+    networks:
+      - monitoring-net
+      - pentestai-net

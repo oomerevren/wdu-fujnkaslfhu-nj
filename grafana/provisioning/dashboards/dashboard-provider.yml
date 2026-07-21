@@ -1,0 +1,16 @@
+# =============================================================================
+# PentestAI — Grafana Dashboard Provisioning
+# =============================================================================
+apiVersion: 1
+
+providers:
+  - name: "PentestAI Dashboards"
+    orgId: 1
+    folder: "PentestAI"
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

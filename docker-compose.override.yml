@@ -1,0 +1,103 @@
+# =============================================================================
+# PentestAI — Development Override
+# =============================================================================
+# Bu dosya, `docker compose up` ile birlikte otomatik olarak okunur.
+# Sadece development ortamında kullanılır.
+#
+# Kullanım:
+#   docker compose up -d
+#   docker compose logs -f app
+# =============================================================================
+
+services:
+  app:
+    # Hot reload için yerel kod dizinini container'a mount et
+    volumes:
+      - ./app:/app/app
+      - ./alembic:/app/alembic
+      - ./alembic.ini:/app/alembic.ini
+    environment:
+      - ENV=development
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --log-level debug
+    develop:
+      watch:
+        - action: sync
+          path: ./app
+          target: /app/app
+        - action: rebuild
+          path: ./requirements.txt
+
+  celery-worker:
+    volumes:
+      - ./app:/app/app
+    environment:
+      - ENV=development
+      - DEBUG=true
+      - CELERY_LOG_LEVEL=debug
+    deploy:
+      replicas: 1
+
+  celery-beat:
+    volumes:
+      - ./app:/app/app
+    environment:
+      - ENV=development
+      - DEBUG=true
+
+  # Development database UI
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@pentestai.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles:
+      - dev-tools
+    networks:
+      - pentestai-net
+
+  # Redis Commander (Redis UI)
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    ports:
+      - "${REDIS_COMMANDER_PORT:-8081}:8081"
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles:
+      - dev-tools
+    networks:
+      - pentestai-net
+
+  # RabbitMQ Management UI
+  rabbitmq:
+    ports:
+      - "${RABBITMQ_MGMT_PORT:-15672}:15672"
+
+  # Mailpit (SMTP testing)
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+    profiles:
+      - dev-tools
+    networks:
+      - pentestai-net
+
+volumes:
+  pgadmin_data:
+    driver: local

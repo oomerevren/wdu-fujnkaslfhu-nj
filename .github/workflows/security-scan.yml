@@ -1,0 +1,159 @@
+# =============================================================================
+# PentestAI — Weekly Security Scan
+# =============================================================================
+# Runs every Monday at 06:00 UTC.
+# Scans: bandit (Python SAST), trivy (container), trufflehog (secrets).
+# Uploads SARIF results to GitHub Security tab.
+# =============================================================================
+
+name: Security Scan
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  # ─── Python SAST: Bandit ───────────────────────────────────────────────
+  bandit:
+    name: Bandit (Python SAST)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install bandit
+        run: pip install bandit bandit-sarif-formatter
+
+      - name: Run bandit
+        run: |
+          bandit -r faz1/app/ -f sarif -o bandit-results.sarif --exit-zero
+
+      - name: Upload Bandit SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: bandit-results.sarif
+          category: bandit-python
+
+  # ─── Container Scan: Trivy ─────────────────────────────────────────────
+  trivy:
+    name: Trivy (Container & FS)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run Trivy on filesystem
+        uses: aquasecurity/trivy-action@0.19.0
+        with:
+          scan-type: fs
+          scan-ref: faz1/
+          format: sarif
+          output: trivy-fs-results.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: 0
+          ignore-unfixed: true
+
+      - name: Upload Trivy FS SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs-results.sarif
+          category: trivy-filesystem
+
+      - name: Build Docker image for scanning
+        uses: docker/build-push-action@v5
+        with:
+          context: faz1
+          file: faz1/Dockerfile
+          push: false
+          load: true
+          tags: pentestai:weekly-scan
+          cache-from: type=gha
+
+      - name: Run Trivy on container image
+        uses: aquasecurity/trivy-action@0.19.0
+        with:
+          image-ref: pentestai:weekly-scan
+          format: sarif
+          output: trivy-container-results.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: 0
+          vuln-type: os,library
+          ignore-unfixed: true
+
+      - name: Upload Trivy Container SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-container-results.sarif
+          category: trivy-container
+
+  # ─── Secrets Detection: TruffleHog ─────────────────────────────────────
+  trufflehog:
+    name: TruffleHog (Secrets)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run TruffleHog
+        uses: trufflesecurity/trufflehog@v3
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --only-verified --results=verified,unknown
+
+  # ─── Dependency Review ─────────────────────────────────────────────────
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+  # ─── Notification ──────────────────────────────────────────────────────
+  notify:
+    name: Send Notification
+    needs: [bandit, trivy, trufflehog, dependency-review]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+      - name: Check for high/critical findings
+        id: check
+        run: |
+          echo "Bandit: ${{ needs.bandit.result }}"
+          echo "Trivy: ${{ needs.trivy.result }}"
+          echo "TruffleHog: ${{ needs.trufflehog.result }}"
+          echo "Dependencies: ${{ needs.dependency-review.result }}"
+
+      - name: Notify Slack
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ needs.bandit.result == 'success' && needs.trivy.result == 'success' && 'success' || 'failure' }}
+          fields: repo,message,commit,author,eventName,workflow
+          text: "Weekly Security Scan ${{ needs.bandit.result == 'success' && needs.trivy.result == 'success' && 'success' || 'failure' }} — check GitHub Security tab for details"
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        if: always() && env.SLACK_WEBHOOK_URL != ''

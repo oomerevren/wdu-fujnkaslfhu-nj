@@ -1,0 +1,267 @@
+# =============================================================================
+# PentestAI — Continuous Integration Pipeline
+# =============================================================================
+# Runs on every push to main and every pull request.
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  pull_request:
+    branches: [main, develop]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # ─── Lint ────────────────────────────────────────────────────────────────
+  lint:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+          cache-dependency-path: "faz1/requirements*.txt"
+
+      - name: Install dependencies
+        working-directory: faz1
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install --no-cache-dir -r requirements.txt
+          pip install --no-cache-dir ruff mypy types-python-dateutil
+
+      - name: Run Ruff linting
+        working-directory: faz1
+        run: ruff check app/ tests/ --output-format=github
+
+      - name: Run Ruff format check
+        working-directory: faz1
+        run: ruff format app/ tests/ --check
+
+      - name: Run MyPy (optional, non-blocking)
+        working-directory: faz1
+        run: mypy app/ --ignore-missing-imports --follow-imports=skip || true
+
+  # ─── Test ────────────────────────────────────────────────────────────────
+  test:
+    name: Tests & Coverage
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pentestai_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+          cache-dependency-path: "faz1/requirements*.txt"
+
+      - name: Install dependencies
+        working-directory: faz1
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install --no-cache-dir -r requirements.txt
+          pip install --no-cache-dir pytest pytest-cov pytest-asyncio httpx
+
+      - name: Create .env for tests
+        working-directory: faz1
+        run: |
+          cat > .env << 'EOF'
+          DATABASE_URL=postgresql://postgres:postgres@localhost:5432/pentestai_test
+          REDIS_URL=redis://localhost:6379/0
+          JWT_SECRET_KEY=test-secret-key-that-is-at-least-64-characters-long-for-testing-purposes-only
+          ENV=test
+          DEBUG=true
+          EOF
+
+      - name: Run database migrations
+        working-directory: faz1
+        run: |
+          pip install alembic
+          alembic upgrade head
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pentestai_test
+
+      - name: Run tests with coverage
+        working-directory: faz1
+        run: pytest --cov=app --cov-report=xml --cov-report=term-missing --cov-fail-under=70 -v
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/pentestai_test
+          REDIS_URL: redis://localhost:6379/0
+          JWT_SECRET_KEY: test-secret-key-that-is-at-least-64-characters-long-for-testing-purposes-only
+          ENV: test
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          file: faz1/coverage.xml
+          flags: python${{ matrix.python-version }}
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report-py${{ matrix.python-version }}
+          path: faz1/htmlcov/
+          retention-days: 14
+
+  # ─── Docker Build & Security Scan ────────────────────────────────────────
+  docker-build:
+    name: Docker Build & Scan
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == false)
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (without push)
+        uses: docker/build-push-action@v5
+        with:
+          context: faz1
+          file: faz1/Dockerfile
+          push: false
+          load: true
+          tags: pentestai:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Docker worker image (without push)
+        uses: docker/build-push-action@v5
+        with:
+          context: faz1
+          file: faz1/Dockerfile.worker
+          push: false
+          load: true
+          tags: pentestai-worker:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Run Trivy vulnerability scanner (app image)
+        uses: aquasecurity/trivy-action@0.19.0
+        with:
+          image-ref: pentestai:ci-${{ github.sha }}
+          format: sarif
+          output: trivy-results-app.sarif
+          severity: CRITICAL,HIGH
+          exit-code: 1
+          vuln-type: os,library
+          ignore-unfixed: true
+
+      - name: Run Trivy vulnerability scanner (worker image)
+        uses: aquasecurity/trivy-action@0.19.0
+        with:
+          image-ref: pentestai-worker:ci-${{ github.sha }}
+          format: sarif
+          output: trivy-results-worker.sarif
+          severity: CRITICAL,HIGH
+          exit-code: 1
+          vuln-type: os,library
+          ignore-unfixed: true
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results-app.sarif
+          category: trivy-app
+
+      - name: Upload Trivy results (worker)
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results-worker.sarif
+          category: trivy-worker
+
+      - name: Docker image vulnerability check summary
+        if: always()
+        run: |
+          echo "## Docker Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "App image (pentestai:ci-${{ github.sha }}) and Worker image (pentestai-worker:ci-${{ github.sha }}) were scanned with Trivy." >> $GITHUB_STEP_SUMMARY
+          echo "CRITICAL and HIGH severity findings will fail the build." >> $GITHUB_STEP_SUMMARY
+
+  # ─── Slack Notification ──────────────────────────────────────────────────
+  notify:
+    name: Send Notification
+    needs: [lint, test, docker-build]
+    runs-on: ubuntu-latest
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Determine status
+        id: status
+        run: |
+          if [[ "${{ needs.lint.result }}" == "success" && "${{ needs.test.result }}" == "success" && "${{ needs.docker-build.result }}" == "success" ]]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notify Slack
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ steps.status.outputs.status }}
+          fields: repo,message,commit,author,action,eventName,workflow
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        if: always() && env.SLACK_WEBHOOK_URL != ''

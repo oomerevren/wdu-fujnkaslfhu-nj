@@ -1,0 +1,130 @@
+# =============================================================================
+# PentestAI — Prometheus Configuration
+# =============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+  external_labels:
+    cluster: "pentestai"
+    env: "${ENV:-production}"
+
+# ─── Alertmanager ─────────────────────────────────────────────────────────
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "alertmanager:9093"
+      timeout: 5s
+      api_version: v2
+
+# ─── Rule Files ───────────────────────────────────────────────────────────
+rule_files:
+  - /etc/prometheus/rules/alerts.yml
+
+# ─── Scrape Configs ───────────────────────────────────────────────────────
+scrape_configs:
+  # ── PentestAI App ──────────────────────────────────────────────────────
+  - job_name: "pentestai-app"
+    scrape_interval: 10s
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - "app:8000"
+        labels:
+          service: "app"
+          tier: "backend"
+
+  # ── PentestAI Worker ───────────────────────────────────────────────────
+  - job_name: "pentestai-worker"
+    scrape_interval: 15s
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets:
+          - "celery-worker:8001"
+        labels:
+          service: "worker"
+          tier: "backend"
+
+  # ── PostgreSQL ─────────────────────────────────────────────────────────
+  - job_name: "postgres"
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - "postgres:9187"
+        labels:
+          service: "postgres"
+          tier: "database"
+    metrics_path: /metrics
+    scheme: http
+
+  # ── Redis ──────────────────────────────────────────────────────────────
+  - job_name: "redis"
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - "redis:9121"
+        labels:
+          service: "redis"
+          tier: "cache"
+    metrics_path: /metrics
+    scheme: http
+
+  # ── RabbitMQ ───────────────────────────────────────────────────────────
+  - job_name: "rabbitmq"
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - "rabbitmq:15692"
+        labels:
+          service: "rabbitmq"
+          tier: "message-bus"
+    metrics_path: /metrics
+    scheme: http
+
+  # ── Nginx ──────────────────────────────────────────────────────────────
+  - job_name: "nginx"
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - "nginx:9113"
+        labels:
+          service: "nginx"
+          tier: "proxy"
+    metrics_path: /metrics
+    scheme: http
+
+  # ── OpenTelemetry Collector ────────────────────────────────────────────
+  - job_name: "otel-collector"
+    scrape_interval: 15s
+    static_configs:
+      - targets:
+          - "otel-collector:8888"
+        labels:
+          service: "otel-collector"
+          tier: "observability"
+
+  # ── Node Exporter (host metrics) ───────────────────────────────────────
+  - job_name: "node"
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - "node-exporter:9100"
+        labels:
+          service: "node"
+          tier: "infrastructure"
+    scheme: http
+
+  # ── Docker (cAdvisor) ──────────────────────────────────────────────────
+  - job_name: "docker"
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+          - "cadvisor:8080"
+        labels:
+          service: "docker"
+          tier: "infrastructure"
+    scheme: http

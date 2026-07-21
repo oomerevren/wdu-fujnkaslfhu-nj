@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: pentestai
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - pentestai-net
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - pentestai-net
+
+  zaproxy:
+    image: ghcr.io/zaproxy/zaproxy:stable
+    command: [
+      "zap.sh", "-daemon",
+      "-host", "0.0.0.0",
+      "-port", "8080",
+      "-config", "api.key=pentestai-zap-key",
+      "-config", "api.addrs.addr.name=.*",
+      "-config", "api.addrs.addr.regex=true"
+    ]
+    ports:
+      - "8080:8080"
+    networks:
+      - pentestai-net
+
+volumes:
+  postgres_data:
+
+networks:
+  pentestai-net:
+    driver: bridge

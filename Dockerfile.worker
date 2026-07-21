@@ -1,0 +1,33 @@
+# =============================================================================
+#  PentestAI — Celery Worker Dockerfile
+# =============================================================================
+#  Build from the main image, then override CMD for Celery.
+# =============================================================================
+
+# ---- Build stage: use the main image as base -------------------------------
+ARG APP_IMAGE=pentestai:latest
+FROM ${APP_IMAGE} AS worker
+
+# ── Labels ──────────────────────────────────────────────────────────────────
+LABEL maintainer="PentestAI Team <dev@pentestai.com>" \
+      description="PentestAI Celery Worker — executes scan tasks asynchronously" \
+      org.opencontainers.image.description="PentestAI Celery Worker"
+
+# ── Environment ─────────────────────────────────────────────────────────────
+ENV CELERY_WORKER_CONCURRENCY=4 \
+    CELERY_WORKER_QUEUES=scans \
+    CELERY_LOG_LEVEL=info \
+    CELERY_MAX_TASKS_PER_CHILD=100 \
+    CELERY_TASK_SOFT_TIME_LIMIT=600 \
+    CELERY_TASK_TIME_LIMIT=900
+
+# ── Health check ────────────────────────────────────────────────────────────
+# Uses celery inspect to verify the worker is alive and connected to the broker
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD python -c "from app.core.celery_app import celery_app; insp = celery_app.control.inspect(); stats = insp.stats(); exit(0 if stats else 1)" || exit 1
+
+# ── Switch to non-root user ─────────────────────────────────────────────────
+USER pentestai
+
+# ── Default command ─────────────────────────────────────────────────────────
+CMD ["celery", "-A", "app.core.celery_app", "worker", "-Q", "scans", "-c", "4", "--loglevel=info", "--max-tasks-per-child=100", "--soft-time-limit=600", "--time-limit=900", "--without-gossip", "--without-mingle", "--without-heartbeat"]
