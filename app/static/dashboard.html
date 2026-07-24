@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PentestAI Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root { --primary: #0f172a; --accent: #e94560; --bg: #f8fafc; --card: #fff; --text: #1e293b; --muted: #64748b; --border: #e2e8f0; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text); }
+    .container { max-width: 1200px; margin: 0 auto; padding: 40px 24px; }
+    header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; }
+    header h1 { font-size: 1.8rem; font-weight: 700; letter-spacing: -0.02em; }
+    header h1 span { color: var(--accent); }
+    nav a { color: var(--muted); text-decoration: none; margin-left: 24px; font-weight: 500; font-size: 0.9rem; transition: color .2s; }
+    nav a:hover { color: var(--primary); }
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 40px; }
+    .stat { background: var(--card); border-radius: 16px; padding: 24px; box-shadow: 0 4px 16px rgba(15,23,42,0.05); border: 1px solid var(--border); }
+    .stat h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 8px; }
+    .stat .value { font-size: 2rem; font-weight: 700; }
+    .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 24px; }
+    .panel { background: var(--card); border-radius: 16px; padding: 28px; box-shadow: 0 4px 16px rgba(15,23,42,0.05); border: 1px solid var(--border); }
+    .panel h2 { font-size: 1.1rem; margin-bottom: 20px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th { text-align: left; color: var(--muted); font-weight: 600; padding: 10px 12px; border-bottom: 2px solid var(--border); }
+    td { padding: 14px 12px; border-bottom: 1px solid var(--border); }
+    td.status { font-weight: 600; }
+    .status-completed { color: #22c55e; }
+    .status-running { color: var(--accent); }
+    .status-queued { color: #f59e0b; }
+    .status-failed { color: #ef4444; }
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 50px; font-size: 0.75rem; font-weight: 600; background: #f1f5f9; color: var(--muted); }
+    .badge.pro { background: var(--accent); color: #fff; }
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } header { flex-direction: column; gap: 16px; align-items: flex-start; } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>PentestAI <span>Dashboard</span></h1>
+      <nav>
+        <a href="/">Ana Sayfa</a>
+        <a href="/docs">API</a>
+        <a href="#">Çıkış</a>
+      </nav>
+    </header>
+
+    <div class="stats">
+      <div class="stat">
+        <h3>Toplam Tarama</h3>
+        <div class="value">42</div>
+      </div>
+      <div class="stat">
+        <h3>Açık Bulgu</h3>
+        <div class="value">128</div>
+      </div>
+      <div class="stat">
+        <h3>Aktif Plan</h3>
+        <div class="value">PRO <span class="badge pro">PRO</span></div>
+      </div>
+      <div class="stat">
+        <h3>Kullanım</h3>
+        <div class="value">17 / 200</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="panel">
+        <h2>Son Taramalar</h2>
+        <table>
+          <thead>
+            <tr><th>Hedef</th><th>Tür</th><th>Durum</th><th>Tarih</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>https://example.com</td><td>AI_DRIVEN</td><td class="status status-completed">Tamamlandı</td><td>2026-07-25</td></tr>
+            <tr><td>https://api.example.com</td><td>FULL</td><td class="status status-running">Çalışıyor</td><td>2026-07-24</td></tr>
+            <tr><td>https://dev.example.com</td><td>ZAP</td><td class="status status-queued">Sırada</td><td>2026-07-24</td></tr>
+            <tr><td>https://staging.example.com</td><td>NUCLEI</td><td class="status status-failed">Başarısız</td><td>2026-07-23</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="panel">
+        <h2>Hızlı İşlemler</h2>
+        <p style="color: var(--muted); margin-bottom: 20px; font-size: 0.95rem;">Yeni bir tarama başlatın veya raporları indirin.</p>
+        <a href="#" style="display: block; padding: 14px; background: var(--primary); color: #fff; border-radius: 10px; text-decoration: none; font-weight: 600; text-align: center; margin-bottom: 10px;">Yeni Tarama</a>
+        <a href="#" style="display: block; padding: 14px; background: var(--accent); color: #fff; border-radius: 10px; text-decoration: none; font-weight: 600; text-align: center;">PDF Rapor İndir</a>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

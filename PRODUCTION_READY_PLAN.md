@@ -1,8 +1,9 @@
 # PentestAI — Production Ready Planı
 
 > **Tarih:** 2026-07-21  
+> **Durum Güncellemesi:** 2026-07-25 — SaaS planına uygun olarak kritik düzeltmeler tamamlandı (`.env`, `email_service`, `docker-compose.prod.yml`, `pyproject.toml`, `main.py`, `scans.py` pagination, `frontend/`, `deployment`).
 > **Hazırlayan:** CEO (Swarm Orchestrator)  
-> **Kapsam:** Faz 1 MVP → Production Ready
+> **Kapsam:** Faz 1 MVP → Production Ready (Sıfır maliyet, 2 aylık exit planı)
 
 ---
 
@@ -16,9 +17,15 @@
 | Workers | ⚠️ İskelet halinde, Nuclei simülasyon, ZAP ve PromptFoo kısmi |
 | Ödeme | ⚠️ Stripe entegrasyon iskeleti var, webhook işlenmiyor |
 | Test | ⚠️ Test suite var ama pytest değil, DB'ye bağlı |
-| Güvenlik | ❌ JWT secret default, .env'de token var, rate limiter in-memory |
-| Deployment | ❌ Dockerfile yok, CI/CD yok, monitoring yok |
-| Logging | ❌ print() ile loglama, structured logging yok |
+| Güvenlik | 🔴 Critical → ✅ Güncellendi (`.env` güncellendi, `JWT_SECRET_KEY` 69 karakter, `email_service` SMTP) |
+| Deployment | ❌ Yok → ✅ Güncellendi (`Dockerfile` mevcut, `docker-compose.prod.yml` yeniden yazıldı, `deploy.sh` güncellendi, `frontend/` eklendi) |
+| Logging | ❌ `print()` → ✅ Güncellendi (`app/core/logging.py` JSON structured) |
+| Monitoring | ❌ Yok → ✅ Güncellendi (`main.py` middleware, `metrics.py`, `tracing.py`, `health` endpoint'leri) |
+| Test | ⚠️ `tests/` var → ✅ `pyproject.toml` (`pytest`, `ruff`, `mypy`, `coverage`) oluşturuldu |
+| Altyapı | ❌ `docker-compose.prod.yml` eksik → ✅ Tüm servisler (`postgres`, `redis`, `rabbitmq`, `neo4j`, `app`, `celery-worker`, `celery-beat`, `nginx`, `zaproxy`) eklenmiş |
+| Ödeme | ⚠️ Stripe webhook (`invoice.paid`, `invoice.payment_failed`) → ✅ `subscriptions.py` güncellendi |
+| Rapor | ⚠️ `WeasyPrint` iskeleti → ✅ `report_service.py` (`WeasyPrint` + fallback) güncellendi |
+| Frontend | ❌ Yok → ✅ `frontend/index.html`, `frontend/dashboard.html`, `app/static/` kopyalandı |
 
 ---
 

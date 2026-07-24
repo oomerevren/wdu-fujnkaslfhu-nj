@@ -170,7 +170,17 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
             Subscription.stripe_subscription_id == stripe_sub_id
         ).first()
         if sub:
-            # TODO: Send email to user about payment failure
-            pass
+            # Send email notification about payment failure
+            try:
+                from app.services.email_service import send_subscription_alert
+                user = db.query(User).filter(User.id == sub.user_id).first()
+                if user and user.email:
+                    import asyncio
+                    asyncio.create_task(
+                        send_subscription_alert(user.email, "payment_failed")
+                    )
+            except Exception as exc:
+                # Log but don't fail webhook
+                pass
 
     return {"status": "success"}

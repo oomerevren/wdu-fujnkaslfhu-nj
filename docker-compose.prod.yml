@@ -1,7 +1,7 @@
 # =============================================================================
 # PentestAI — Production Docker Compose
 # =============================================================================
-# Kullanım:
+# Usage:
 #   docker compose -f docker-compose.prod.yml up -d
 #   docker compose -f docker-compose.prod.yml ps
 #   docker compose -f docker-compose.prod.yml logs -f
@@ -21,21 +21,13 @@ services:
   postgres:
     image: postgres:16-alpine
     <<: *restart-policy
-      neo4j:
-    image: neo4j:5-community
-    restart: unless-stopped
     environment:
-      - NEO4J_AUTH=neo4j/pentestai-neo4j-secret
-    networks:
-      - pentestai-net
-
-volumes:
-      - postgres_data:/var/lib/postgresql/data
-    environment:
-      POSTGRES_USER: &db_user ${POSTGRES_USER:-pentestai}
-      POSTGRES_PASSWORD: &db_password ${POSTGRES_PASSWORD:-pentestai}
-      POSTGRES_DB: &db_name ${POSTGRES_DB:-pentestai}
+      POSTGRES_USER: ${POSTGRES_USER:-pentestai}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pentestai}
+      POSTGRES_DB: ${POSTGRES_DB:-pentestai}
       PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pentestai} -d ${POSTGRES_DB:-pentestai}"]
       interval: 10s
@@ -50,4 +42,218 @@ volumes:
   redis:
     image: redis:7-alpine
     <<: *restart-policy
-    
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+    networks:
+      - pentestai-net
+
+  # ─── RabbitMQ ────────────────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    <<: *restart-policy
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+    networks:
+      - pentestai-net
+
+  # ─── Neo4j ───────────────────────────────────────────────────────────────
+  neo4j:
+    image: neo4j:5-community
+    <<: *restart-policy
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-pentestai-neo4j-secret}
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: *default-logging
+    networks:
+      - pentestai-net
+
+  # ─── App ─────────────────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pentestai:latest
+    <<: *restart-policy
+    env_file:
+      - .env
+    environment:
+      - ENV=production
+      - DEBUG=False
+      - DATABASE_URL=postgresql://pentestai:${POSTGRES_PASSWORD:-pentestai}@postgres:5432/pentestai
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+      - NEO4J_URI=bolt://neo4j:7687
+      - ZAP_BASE_URL=http://zaproxy:8080
+    volumes:
+      - ./app:/app/app:ro
+      - ./alembic.ini:/app/alembic.ini:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "--silent", "--show-error", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging: *default-logging
+    networks:
+      - pentestai-net
+
+  # ─── Celery Worker ───────────────────────────────────────────────────────
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    image: pentestai-worker:latest
+    <<: *restart-policy
+    env_file:
+      - .env
+    environment:
+      - ENV=production
+      - DATABASE_URL=postgresql://pentestai:${POSTGRES_PASSWORD:-pentestai}@postgres:5432/pentestai
+      - REDIS_URL=redis://redis:6379/0
+      - RABBITMQ_URL=amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      app:
+        condition: service_started
+    volumes:
+      - ./app:/app/app:ro
+    command: celery -A app.core.celery_app worker --loglevel=info --queues=default,scans --concurrency=4
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.core.celery_app inspect ping || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging: *default-logging
+    networks:
+      - pentestai-net
+
+  # ─── Celery Beat ─────────────────────────────────────────────────────────
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    image: pentestai-worker:latest
+    <<: *restart-policy
+    env_file:
+      - .env
+    environment:
+      - ENV=production
+      - DATABASE_URL=postgresql://pentestai:${POSTGRES_PASSWORD:-pentestai}@postgres:5432/pentestai
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app:ro
+    command: celery -A app.core.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    logging: *default-logging
+    networks:
+      - pentestai-net
+
+  # ─── Nginx ───────────────────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    <<: *restart-policy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+      - ./app/static:/app/static:ro
+    depends_on:
+      app:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "--silent", "--show-error", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging: *default-logging
+    networks:
+      - pentestai-net
+
+  # ─── ZAP Proxy ────────────────────────────────────────────────────────────
+  zaproxy:
+    image: ghcr.io/zaproxy/zaproxy:stable
+    <<: *restart-policy
+    command: [
+      "zap.sh", "-daemon",
+      "-host", "0.0.0.0",
+      "-port", "8080",
+      "-config", "api.key=pentestai-zap-key",
+      "-config", "api.addrs.addr.name=.*",
+      "-config", "api.addrs.addr.regex=true"
+    ]
+    ports:
+      - "8080:8080"
+    volumes:
+      - zap_data:/zap/wrk
+    healthcheck:
+      test: ["CMD", "curl", "-f", "--silent", "--show-error", "http://localhost:8080/JSON/core/view/version/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - pentestai-net
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  neo4j_data:
+  neo4j_logs:
+  zap_data:
+
+networks:
+  pentestai-net:
+    driver: bridge
