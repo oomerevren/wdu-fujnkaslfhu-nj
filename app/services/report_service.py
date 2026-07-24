@@ -1,38 +1,170 @@
+"""PDF Report Service for PentestAI — production WeasyPrint integration."""
 from typing import List, Dict, Any
 import datetime
+from pathlib import Path
+
+from weasyprint import HTML
 from app.core.logging import logger
+from app.config import settings
+
 
 class ReportService:
     def __init__(self):
         self.template_name = "report.html"
+        self.template_path = Path(__file__).parent.parent / "templates" / self.template_name
+
+    def _load_template(self) -> str:
+        """Load HTML report template from disk."""
+        try:
+            with open(self.template_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            logger.warning("Report template not found, using default HTML", extra={"template": str(self.template_path)})
+            return self._default_template()
+
+    def _default_template(self) -> str:
+        """Default HTML template for PDF reports."""
+        return """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <title>PentestAI Security Report</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 40px; color: #333; }
+                h1 { color: #1a2b4c; border-bottom: 3px solid #e74c3c; padding-bottom: 15px; }
+                h2 { color: #2c3e50; margin-top: 30px; }
+                .meta { background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 20px; }
+                .finding { border-left: 4px solid #e74c3c; padding: 15px; margin: 10px 0; background: #fff5f5; }
+                .finding-critical { border-left-color: #c0392b; }
+                .finding-high { border-left-color: #e67e22; }
+                .finding-medium { border-left-color: #f1c40f; }
+                .finding-low { border-left-color: #3498db; }
+                .finding-info { border-left-color: #95a5a6; }
+                .label { display: inline-block; padding: 3px 8px; border-radius: 3px; color: white; font-weight: bold; font-size: 12px; }
+                .label-critical { background: #c0392b; }
+                .label-high { background: #e67e22; }
+                .label-medium { background: #f1c40f; color: #333; }
+                .label-low { background: #3498db; }
+                .label-info { background: #95a5a6; }
+                .summary-box { display: flex; gap: 15px; margin: 20px 0; }
+                .summary-card { flex: 1; background: #1a2b4c; color: white; padding: 20px; border-radius: 8px; text-align: center; }
+                .summary-card h3 { margin: 0; font-size: 14px; opacity: 0.9; }
+                .summary-card .number { font-size: 28px; font-weight: bold; margin-top: 8px; }
+                table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+                th { background: #1a2b4c; color: white; text-align: left; padding: 12px; }
+                td { padding: 10px; border-bottom: 1px solid #ddd; }
+                tr:hover { background: #f8f9fa; }
+            </style>
+        </head>
+        <body>
+            <h1>PentestAI Security Report</h1>
+            <div class="meta">
+                <strong>Target:</strong> {{ target_url }}<br>
+                <strong>Scan Type:</strong> {{ scan_type }}<br>
+                <strong>Generated:</strong> {{ generated_at }}<br>
+                <strong>Scan ID:</strong> {{ scan_id }}
+            </div>
+
+            <h2>Executive Summary</h2>
+            <div class="summary-box">
+                <div class="summary-card">
+                    <h3>Critical</h3>
+                    <div class="number">{{ summary_critical }}</div>
+                </div>
+                <div class="summary-card">
+                    <h3>High</h3>
+                    <div class="number">{{ summary_high }}</div>
+                </div>
+                <div class="summary-card">
+                    <h3>Medium</h3>
+                    <div class="number">{{ summary_medium }}</div>
+                </div>
+                <div class="summary-card">
+                    <h3>Low</h3>
+                    <div class="number">{{ summary_low }}</div>
+                </div>
+            </div>
+
+            <h2>Findings ({{ findings_count }} total)</h2>
+            {{ findings_table }}
+
+            <h2>Remediation Priorities</h2>
+            {{ remediation_priorities }}
+
+            <h2>Pipeline Metadata</h2>
+            <table>
+                <tr><th>Property</th><th>Value</th></tr>
+                <tr><td>Started</td><td>{{ pipeline_start }}</td></tr>
+                <tr><td>Completed</td><td>{{ pipeline_end }}</td></tr>
+                <tr><td>Duration (seconds)</td><td>{{ pipeline_duration }}</td></tr>
+                <tr><td>Scanners Used</td><td>{{ scanners_used }}</td></tr>
+            </table>
+
+            <footer style="margin-top: 50px; padding-top: 20px; border-top: 2px solid #1a2b4c; font-size: 12px; color: #777; text-align: center;">
+                Generated by PentestAI Agent System — Version {{ version }}
+            </footer>
+        </body>
+        </html>
+        """
+
+    def render_findings_table(self, findings: List[Dict[str, Any]]) -> str:
+        """Generate HTML table rows for findings."""
+        rows = []
+        for f in findings:
+            severity = f.get("severity", "info")
+            rows.append(f"""
+            <tr>
+                <td><span class="label label-{severity}">{severity.upper()}</span></td>
+                <td><strong>{f.get("name", "Unknown")}</strong></td>
+                <td>{f.get("description", "")[:120]}...</td>
+                <td>{f.get("cve_id", "N/A")}</td>
+                <td>{f.get("cvss_score", "N/A")}</td>
+                <td>{f.get("status", "open")}</td>
+            </tr>
+            """)
+        return "\n".join(rows) if rows else '<tr><td colspan="6">No findings recorded.</td></tr>'
+
+    def render_remediation_priorities(self, priorities: List[Dict[str, Any]]) -> str:
+        items = []
+        for p in priorities:
+            items.append(f"<li><strong>{p.get('finding_name', 'Unknown')}</strong> — {p.get('remediation', 'No recommendation available.')}</li>")
+        return "<ul>" + "".join(items) + "</ul>" if items else "<p>No remediation priorities identified.</p>"
 
     async def generate_scan_pdf(self, scan_data: Dict[str, Any], findings: List[Dict[str, Any]]) -> bytes:
-        """
-        Generates a PDF report for a specific scan.
-        In production, this utilizes WeasyPrint to convert HTML templates to PDF.
-        """
-        logger.info(f"Generating PDF report for scan: {scan_data.get('id')}")
+        logger.info("Generating PDF report", extra={"scan_id": scan_data.get("id"), "target": scan_data.get("target_url")})
 
-        # Mock PDF generation by creating a text-based representation
-        report_header = f"PENTESTAI SECURITY REPORT
-"
-        report_header += f"Generated: {datetime.datetime.now().isoformat()}
-"
-        report_header += f"Target: {scan_data.get('target_url')}
-"
-        report_header += "="*30 + "
-"
+        template = self._load_template()
+        summary = scan_data.get("summary", {})
 
-        finding_details = ""
-        for f in findings:
-            finding_details += f"[-] Finding: {f.get('name')}
-"
-            finding_details += f"    Severity: {f.get('severity')}
-"
-            finding_details += f"    Description: {f.get('description')[:100]}...
+        html_content = template.replace("{{ target_url }}", scan_data.get("target_url", "N/A"))
+        html_content = html_content.replace("{{ scan_type }}", scan_data.get("scan_type", "N/A"))
+        html_content = html_content.replace("{{ generated_at }}", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        html_content = html_content.replace("{{ scan_id }}", str(scan_data.get("id", "N/A")))
+        html_content = html_content.replace("{{ summary_critical }}", str(summary.get("critical", 0)))
+        html_content = html_content.replace("{{ summary_high }}", str(summary.get("high", 0)))
+        html_content = html_content.replace("{{ summary_medium }}", str(summary.get("medium", 0)))
+        html_content = html_content.replace("{{ summary_low }}", str(summary.get("low", 0)))
+        html_content = html_content.replace("{{ findings_count }}", str(len(findings)))
+        html_content = html_content.replace("{{ findings_table }}", self.render_findings_table(findings))
+        html_content = html_content.replace("{{ remediation_priorities }}", self.render_remediation_priorities(scan_data.get("remediation_priorities", [])))
+        html_content = html_content.replace("{{ pipeline_start }}", str(scan_data.get("pipeline", {}).get("started_at", "N/A")))
+        html_content = html_content.replace("{{ pipeline_end }}", str(scan_data.get("pipeline", {}).get("completed_at", "N/A")))
+        html_content = html_content.replace("{{ pipeline_duration }}", str(scan_data.get("pipeline", {}).get("duration_seconds", "N/A")))
+        html_content = html_content.replace("{{ scanners_used }}", ", ".join(scan_data.get("pipeline", {}).get("scanners_used", [])))
+        html_content = html_content.replace("{{ version }}", settings.VERSION)
 
-"
+        try:
+            pdf_bytes = HTML(string=html_content, base_url=settings.FRONTEND_URL).write_pdf()
+            logger.info("PDF generated successfully", extra={"scan_id": scan_data.get("id"), "bytes": len(pdf_bytes)})
+            return pdf_bytes
+        except Exception as exc:
+            logger.error("PDF generation failed — falling back to text report", extra={"scan_id": scan_data.get("id"), "error": str(exc)})
+            # Fallback to text-based report
+            text_report = f"PENTESTAI SECURITY REPORT\nGenerated: {datetime.datetime.now().isoformat()}\nTarget: {scan_data.get('target_url')}\nScan ID: {scan_data.get('id')}\n\nFindings ({len(findings)}):\n"
+            for f in findings:
+                text_report += f"- [{f.get('severity', 'info').upper()}] {f.get('name', 'Unknown')}: {f.get('description', '')[:120]}...\n"
+            return text_report.encode("utf-8")
 
-        # Combine and return as bytes (simulating PDF output)
-        full_report = report_header + finding_details
-        return full_report.encode('utf-8')
+
+report_service = ReportService()

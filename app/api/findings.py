@@ -48,6 +48,7 @@ def list_findings(
     severity: Optional[str] = None,
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
+    cursor: Optional[str] = Query(None, description="Cursor-based pagination: pass the last finding `created_at` ISO timestamp"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -71,13 +72,30 @@ def list_findings(
     if severity:
         query = query.filter(Finding.severity == severity)
 
+    # Cursor-based pagination
+    if cursor:
+        try:
+            from datetime import datetime
+            cursor_dt = datetime.fromisoformat(cursor)
+            query = query.filter(Finding.created_at < cursor_dt)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="Invalid cursor format. Use ISO 8601 timestamp.")
+
     total = query.count()
     findings = (
         query.order_by(Finding.created_at.desc())
         .offset((page - 1) * size)
-        .limit(size)
+        .limit(size + 1 if not cursor else size)
         .all()
     )
+
+    has_more = False
+    if cursor:
+        has_more = len(findings) > size
+        findings = findings[:size]
+    else:
+        has_more = len(findings) > size
+        findings = findings[:size]
     return PaginatedResponse.create(items=findings, total=total, page=page, size=size)
 
 
